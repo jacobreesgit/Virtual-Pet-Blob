@@ -34,6 +34,10 @@ enum BlobMood: CaseIterable {
     }
 }
 
+enum MouthState {
+    case closed, slightlyOpen, wideOpen, chewing, smiling, frowning
+}
+
 struct ContentView: View {
     @StateObject private var blobViewModel = BlobViewModel()
     
@@ -47,7 +51,6 @@ struct ContentView: View {
                 )
                 .ignoresSafeArea()
                 
-                SlimeTrailView(trail: blobViewModel.slimeTrail, mood: blobViewModel.currentMood)
                 
                 BlobView(
                     isDragging: blobViewModel.isDragging,
@@ -56,7 +59,10 @@ struct ContentView: View {
                     isBouncing: blobViewModel.isBouncing,
                     isShaking: blobViewModel.isShaking,
                     mood: blobViewModel.currentMood,
-                    scale: blobViewModel.blobScale
+                    scale: blobViewModel.blobScale,
+                    mouthState: blobViewModel.mouthState,
+                    isAsleep: blobViewModel.isAsleep,
+                    showParticles: blobViewModel.showFeedingParticles
                 )
                 .position(blobViewModel.blobPosition)
                 .gesture(
@@ -68,18 +74,31 @@ struct ContentView: View {
                 .onTapGesture(count: 2) {
                     blobViewModel.split()
                 }
-                .onLongPressGesture(minimumDuration: 0.5) {
-                    blobViewModel.inflate()
+                .onLongPressGesture(minimumDuration: 2.0) {
+                    blobViewModel.goToSleep()
+                }
+                .onDrop(of: ["public.text"], isTargeted: nil) { providers, _ in
+                    guard let provider = providers.first else { return false }
+                    
+                    provider.loadItem(forTypeIdentifier: "public.text", options: nil) { item, error in
+                        if let food = item as? String {
+                            DispatchQueue.main.async {
+                                blobViewModel.feed(with: food)
+                            }
+                        }
+                    }
+                    return true
                 }
                 
                 VStack {
                     HStack {
-                        FeedingButton(action: { blobViewModel.feed() })
                         Spacer()
                         StatsView(viewModel: blobViewModel)
                     }
                     .padding()
                     Spacer()
+                    
+                    FoodInventoryView(viewModel: blobViewModel)
                 }
                 
                 if blobViewModel.showAchievement {
@@ -121,6 +140,9 @@ struct BlobView: View {
     let isShaking: Bool
     let mood: BlobMood
     let scale: CGFloat
+    let mouthState: MouthState
+    let isAsleep: Bool
+    let showParticles: Bool
     
     @State private var rotationAngle: Double = 0
     @State private var particleOffset: CGFloat = 0
@@ -137,6 +159,20 @@ struct BlobView: View {
                             y: sin(Double(i) * .pi / 4) * (60 + particleOffset)
                         )
                         .animation(.easeInOut(duration: 1.0).repeatForever(autoreverses: true), value: particleOffset)
+                }
+            }
+            
+            if showParticles {
+                ForEach(0..<6, id: \.self) { i in
+                    Text(["✨", "💖", "🌟", "💫", "⭐", "💛"][i])
+                        .font(.system(size: 16))
+                        .offset(
+                            x: cos(Double(i) * .pi / 3) * 40,
+                            y: sin(Double(i) * .pi / 3) * 40
+                        )
+                        .opacity(showParticles ? 1.0 : 0.0)
+                        .scaleEffect(showParticles ? 1.2 : 0.5)
+                        .animation(.easeOut(duration: 1.0), value: showParticles)
                 }
             }
             
@@ -160,11 +196,15 @@ struct BlobView: View {
                 .animation(.spring(response: 0.4, dampingFraction: 0.5), value: isInflated)
                 .animation(.easeInOut(duration: 0.1), value: rotationAngle)
             
-            HStack(spacing: isInflated ? 30 : 20) {
-                EyeView(isExcited: mood == .excited, isSleepy: mood == .sleepy, isNeglected: mood == .neglected)
-                EyeView(isExcited: mood == .excited, isSleepy: mood == .sleepy, isNeglected: mood == .neglected)
+            VStack(spacing: 8) {
+                HStack(spacing: isInflated ? 30 : 20) {
+                    EyeView(isExcited: mood == .excited, isSleepy: mood == .sleepy, isNeglected: mood == .neglected)
+                    EyeView(isExcited: mood == .excited, isSleepy: mood == .sleepy, isNeglected: mood == .neglected)
+                }
+                
+                MouthView(state: mouthState, mood: mood, isAsleep: isAsleep)
             }
-            .offset(y: -10)
+            .offset(y: -5)
             .scaleEffect(isInflated ? 1.3 : 1.0)
             .animation(.spring(response: 0.4, dampingFraction: 0.5), value: isInflated)
         }
@@ -267,6 +307,63 @@ struct EyeView: View {
     }
 }
 
+struct MouthView: View {
+    let state: MouthState
+    let mood: BlobMood
+    let isAsleep: Bool
+    
+    var body: some View {
+        Group {
+            switch state {
+            case .closed:
+                if isAsleep {
+                    Ellipse()
+                        .fill(Color.black.opacity(0.6))
+                        .frame(width: 20, height: 3)
+                } else {
+                    Ellipse()
+                        .fill(Color.black)
+                        .frame(width: 15, height: 2)
+                }
+                
+            case .slightlyOpen:
+                Ellipse()
+                    .fill(Color.black)
+                    .frame(width: 18, height: 6)
+                
+            case .wideOpen:
+                Circle()
+                    .fill(Color.black)
+                    .frame(width: 25, height: 25)
+                
+            case .chewing:
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(Color.black)
+                    .frame(width: 20, height: 8)
+                    .scaleEffect(x: 0.8, y: 1.2)
+                    .animation(.easeInOut(duration: 0.2).repeatCount(3, autoreverses: true), value: state)
+                
+            case .smiling:
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 0))
+                    path.addQuadCurve(to: CGPoint(x: 24, y: 0), control: CGPoint(x: 12, y: 8))
+                }
+                .stroke(Color.black, lineWidth: 3)
+                .frame(width: 24, height: 8)
+                
+            case .frowning:
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 8))
+                    path.addQuadCurve(to: CGPoint(x: 24, y: 8), control: CGPoint(x: 12, y: 0))
+                }
+                .stroke(Color.black, lineWidth: 3)
+                .frame(width: 24, height: 8)
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: state)
+    }
+}
+
 
 class BlobViewModel: ObservableObject {
     @Published var blobPosition = CGPoint(x: 200, y: 400)
@@ -284,7 +381,10 @@ class BlobViewModel: ObservableObject {
     @Published var achievements: [String] = []
     @Published var showAchievement = false
     @Published var latestAchievement = ""
-    @Published var slimeTrail: [CGPoint] = []
+    @Published var isAsleep = false
+    @Published var mouthState: MouthState = .closed
+    @Published var draggedFood: String? = nil
+    @Published var showFeedingParticles = false
     
     private var velocity = CGVector.zero
     private let motionManager = CMMotionManager()
@@ -292,6 +392,8 @@ class BlobViewModel: ObservableObject {
     private var energyTimer: Timer?
     private var totalFeedings = 0
     private var totalBounces = 0
+    private var tapCount = 0
+    private var tapTimer: Timer?
     
     init() {
         startTimers()
@@ -324,14 +426,10 @@ class BlobViewModel: ObservableObject {
     }
     
     func startDragging(at location: CGPoint, in geometry: GeometryProxy) {
+        guard !isAsleep else { return }
         isDragging = true
         isStretching = true
         blobPosition = location
-        
-        slimeTrail.append(location)
-        if slimeTrail.count > 20 {
-            slimeTrail.removeFirst()
-        }
         
         happinessLevel = min(1.0, happinessLevel + 0.05)
         updateMood()
@@ -340,12 +438,6 @@ class BlobViewModel: ObservableObject {
     func endDragging(in geometry: GeometryProxy) {
         isDragging = false
         isStretching = false
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-            withAnimation(.easeOut(duration: 1.0)) {
-                self.slimeTrail.removeAll()
-            }
-        }
         
         let bounds = geometry.frame(in: .local)
         var newPosition = blobPosition
@@ -372,6 +464,25 @@ class BlobViewModel: ObservableObject {
     }
     
     func bounce() {
+        guard !isAsleep else { 
+            wakeUp()
+            return 
+        }
+        
+        tapCount += 1
+        
+        tapTimer?.invalidate()
+        tapTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [weak self] _ in
+            self?.tapCount = 0
+        }
+        
+        if tapCount >= 5 {
+            miniWorkout()
+            tapCount = 0
+            tapTimer?.invalidate()
+            return
+        }
+        
         let impactHaptic = UIImpactFeedbackGenerator(style: .medium)
         impactHaptic.impactOccurred()
         
@@ -392,21 +503,67 @@ class BlobViewModel: ObservableObject {
         saveBlobData()
     }
     
-    func feed() {
+    func feed(with food: String) {
+        guard !isAsleep else { return }
+        
         let notificationHaptic = UINotificationFeedbackGenerator()
         notificationHaptic.notificationOccurred(.success)
         
-        hungerLevel = min(1.0, hungerLevel + 0.3)
-        happinessLevel = min(1.0, happinessLevel + 0.2)
-        energyLevel = min(1.0, energyLevel + 0.1)
+        var hungerIncrease: Double = 0
+        var happinessIncrease: Double = 0
+        var energyChange: Double = 0
         
-        withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
-            blobScale = 1.2
+        switch food {
+        case "🍎":
+            hungerIncrease = 0.3
+            happinessIncrease = 0.1
+        case "🍰":
+            hungerIncrease = 0.4
+            happinessIncrease = 0.3
+            energyChange = -0.1
+        case "🥕":
+            hungerIncrease = 0.2
+            happinessIncrease = 0.1
+        case "🍪":
+            hungerIncrease = 0.3
+            happinessIncrease = 0.2
+        case "🍌":
+            hungerIncrease = 0.2
+            happinessIncrease = 0.2
+        case "🍇":
+            hungerIncrease = 0.1
+            happinessIncrease = 0.1
+        default:
+            hungerIncrease = 0.2
+            happinessIncrease = 0.1
         }
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+        hungerLevel = min(1.0, hungerLevel + hungerIncrease)
+        happinessLevel = min(1.0, happinessLevel + happinessIncrease)
+        energyLevel = max(0.0, min(1.0, energyLevel + energyChange))
+        
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+            mouthState = .wideOpen
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            withAnimation(.spring(response: 0.2, dampingFraction: 0.4)) {
+                self.mouthState = .chewing
+            }
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
             withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                self.mouthState = .smiling
                 self.blobScale = min(1.5, self.blobScale + 0.05)
+                self.showFeedingParticles = true
+            }
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            self.updateMouthForMood()
+            withAnimation(.easeOut(duration: 0.5)) {
+                self.showFeedingParticles = false
             }
         }
         
@@ -414,6 +571,77 @@ class BlobViewModel: ObservableObject {
         checkAchievements()
         updateMood()
         saveBlobData()
+    }
+    
+    func goToSleep() {
+        withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
+            isAsleep = true
+            mouthState = .closed
+        }
+        
+        startSleepEnergyRestore()
+    }
+    
+    func wakeUp() {
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+            isAsleep = false
+        }
+        updateMouthForMood()
+        updateMood()
+    }
+    
+    func miniWorkout() {
+        guard !isAsleep else { return }
+        
+        let impactHaptic = UIImpactFeedbackGenerator(style: .heavy)
+        impactHaptic.impactOccurred()
+        
+        energyLevel = min(1.0, energyLevel + 0.2)
+        hungerLevel = max(0.0, hungerLevel - 0.1)
+        
+        withAnimation(.spring(response: 0.2, dampingFraction: 0.3)) {
+            isBouncing = true
+        }
+        
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                self.isBouncing = false
+            }
+        }
+        
+        updateMood()
+        saveBlobData()
+    }
+    
+    private func startSleepEnergyRestore() {
+        Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] timer in
+            guard let self = self, self.isAsleep else {
+                timer.invalidate()
+                return
+            }
+            
+            self.energyLevel = min(1.0, self.energyLevel + 0.1)
+            
+            if self.energyLevel >= 0.8 {
+                self.wakeUp()
+                timer.invalidate()
+            }
+        }
+    }
+    
+    private func updateMouthForMood() {
+        switch currentMood {
+        case .happy:
+            mouthState = .smiling
+        case .hungry:
+            mouthState = .slightlyOpen
+        case .sleepy:
+            mouthState = .closed
+        case .excited:
+            mouthState = .wideOpen
+        case .neglected:
+            mouthState = .frowning
+        }
     }
     
     func split() {
@@ -474,6 +702,8 @@ class BlobViewModel: ObservableObject {
     }
     
     private func updateMood() {
+        let previousMood = currentMood
+        
         if isShaking {
             currentMood = .excited
         } else if hungerLevel < 0.2 && energyLevel < 0.2 && happinessLevel < 0.3 {
@@ -486,6 +716,10 @@ class BlobViewModel: ObservableObject {
             currentMood = .happy
         } else {
             currentMood = .happy
+        }
+        
+        if previousMood != currentMood && !isAsleep {
+            updateMouthForMood()
         }
     }
     
@@ -576,29 +810,57 @@ class BlobViewModel: ObservableObject {
     }
 }
 
-struct FeedingButton: View {
-    let action: () -> Void
-    @State private var selectedFood = "🍎"
-    
-    let foods = ["🍎", "🍌", "🍇", "🍓", "🥕", "🍪", "🍰", "🍭"]
+struct DraggableFoodItem: View {
+    let food: String
+    @State private var dragOffset = CGSize.zero
     
     var body: some View {
-        Menu {
-            ForEach(foods, id: \.self) { food in
-                Button(action: {
-                    selectedFood = food
-                    action()
-                }) {
-                    Text(food)
-                }
+        Text(food)
+            .font(.system(size: 35))
+            .padding(8)
+            .background(Color.white.opacity(0.3))
+            .clipShape(Circle())
+            .scaleEffect(dragOffset == .zero ? 1.0 : 1.1)
+            .offset(dragOffset)
+            .animation(.spring(response: 0.3, dampingFraction: 0.6), value: dragOffset)
+            .onDrag {
+                NSItemProvider(object: food as NSString)
             }
-        } label: {
-            Text(selectedFood)
-                .font(.system(size: 30))
-                .padding()
-                .background(Color.white.opacity(0.2))
-                .clipShape(Circle())
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        dragOffset = value.translation
+                    }
+                    .onEnded { _ in
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) {
+                            dragOffset = .zero
+                        }
+                    }
+            )
+    }
+}
+
+struct FoodInventoryView: View {
+    @ObservedObject var viewModel: BlobViewModel
+    
+    let foods = ["🍎", "🍌", "🍇", "🥕", "🍪", "🍰"]
+    
+    var body: some View {
+        HStack(spacing: 15) {
+            ForEach(foods, id: \.self) { food in
+                DraggableFoodItem(food: food)
+            }
         }
+        .padding()
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color.brown.opacity(0.3))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color.brown.opacity(0.6), lineWidth: 2)
+                )
+        )
+        .padding(.horizontal)
     }
 }
 
@@ -680,24 +942,6 @@ struct AchievementPopup: View {
     }
 }
 
-struct SlimeTrailView: View {
-    let trail: [CGPoint]
-    let mood: BlobMood
-    
-    var body: some View {
-        ForEach(0..<trail.count, id: \.self) { index in
-            let point = trail[index]
-            let opacity = Double(index) / Double(max(trail.count - 1, 1))
-            let size = CGFloat(5 + (index * 2))
-            
-            Circle()
-                .fill(mood.color.opacity(opacity * 0.4))
-                .frame(width: size, height: size)
-                .position(point)
-                .animation(.easeOut(duration: 0.5), value: point)
-        }
-    }
-}
 
 #Preview {
     ContentView()
